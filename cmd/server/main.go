@@ -28,6 +28,18 @@ func main() {
 		log.Fatalf("Error creating new channel: %v", err)
 	}
 
+	_, queue, err := pubsub.DeclareAndBind(
+		conn,
+		routing.ExchangePerilTopic,
+		"game_logs",
+		"game_logs.*",
+		pubsub.SimpleQueueTypeDurable,
+	)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	}
+	fmt.Printf("Queue %v declared and bound!\n", queue.Name)
+
 	gamelogic.PrintServerHelp()
 
 	for {
