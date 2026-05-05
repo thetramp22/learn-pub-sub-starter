@@ -21,24 +21,53 @@ func main() {
 	defer conn.Close()
 	fmt.Println("Connection to RabbitMQ successful.")
 
+	publishCh, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("could not create channel: %v", err)
+	}
+
 	username, err := gamelogic.ClientWelcome()
 	if err != nil {
 		log.Fatalf("Error: %v\n", err)
 	}
 
-	_, queue, err := pubsub.DeclareAndBind(
+	gamestate := gamelogic.NewGameState(username)
+
+	err = pubsub.SubscribeJSON(
 		conn,
 		routing.ExchangePerilDirect,
-		routing.PauseKey+"."+username,
+		routing.PauseKey+"."+gamestate.GetUsername(),
 		routing.PauseKey,
 		pubsub.SimpleQueueTypeTransient,
+		handlerPause(gamestate),
 	)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		log.Fatalf("could not subscribe to pause: %v", err)
 	}
-	fmt.Printf("Queue %v declared and bound!\n", queue.Name)
 
-	gamestate := gamelogic.NewGameState(username)
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilTopic,
+		routing.ArmyMovesPrefix+"."+gamestate.GetUsername(),
+		routing.ArmyMovesPrefix+".*",
+		pubsub.SimpleQueueTypeTransient,
+		handlerMove(gamestate, publishCh),
+	)
+	if err != nil {
+		log.Fatalf("could not subscribe to army moves: %v", err)
+	}
+
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilDirect,
+		routing.PauseKey+"."+gamestate.GetUsername(),
+		routing.PauseKey,
+		pubsub.SimpleQueueTypeTransient,
+		handlerPause(gamestate),
+	)
+	if err != nil {
+		log.Fatalf("could not subscribe to pause: %v", err)
+	}
 
 	for {
 		commands := gamelogic.GetInput()
@@ -46,7 +75,22 @@ func main() {
 		case "spawn":
 			gamestate.CommandSpawn(commands)
 		case "move":
-			gamestate.CommandMove(commands)
+			move, err := gamestate.CommandMove(commands)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			err = pubsub.PublishJSON(
+				publishCh,
+				routing.ExchangePerilTopic,
+				routing.ArmyMovesPrefix+"."+move.Player.Username,
+				move,
+			)
+			if err != nil {
+				fmt.Printf("error: %s\n", err)
+				continue
+			}
+			fmt.Printf("Moved %v units to %s\n", len(move.Units), move.ToLocation)
 		case "status":
 			gamestate.CommandStatus()
 		case "help":
